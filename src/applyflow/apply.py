@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlparse
 from applyflow.config import Profile
 from applyflow.match import render_cover_letter
 from applyflow.models import Job, Resume
-from applyflow.sources import blocked_host
+from applyflow.sources import blocked_for_apply, is_linkedin_url
 from applyflow.store import already_applied, record_application
 
 
@@ -167,7 +167,7 @@ def _apply_browser(
     cover_letter: str = "",
     hold_for_review: bool = True,
 ) -> ApplyResult:
-    blocked = blocked_host(target)
+    blocked = blocked_for_apply(target)
     if blocked:
         return ApplyResult(
             job,
@@ -189,6 +189,23 @@ def _apply_browser(
     except ImportError as exc:
         return ApplyResult(job, "failed", "browser", str(exc) or MISSING_PLAYWRIGHT)
     return ApplyResult(job, outcome.status, "browser", outcome.notes)
+
+
+def job_from_linkedin_url(url: str) -> Job:
+    target = (url or "").strip()
+    if not is_linkedin_url(target):
+        raise ValueError("That is not a LinkedIn job URL.")
+    from applyflow.sources import _id, detect_ats
+
+    return Job(
+        external_id=_id("linkedin", target),
+        source="linkedin",
+        title="LinkedIn Easy Apply",
+        company="LinkedIn",
+        url=target,
+        apply_url=target,
+        ats=detect_ats(target) or "linkedin",
+    )
 
 
 def playwright_available() -> bool:

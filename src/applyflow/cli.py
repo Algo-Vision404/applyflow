@@ -471,6 +471,48 @@ def apply(
     _print_result(result.status, f"{result.method}: {result.notes}")
 
 
+@app.command("linkedin")
+def linkedin_apply(
+    url: str = typer.Argument(..., help="LinkedIn job URL, e.g. https://www.linkedin.com/jobs/view/123"),
+    live: bool = typer.Option(True, "--live/--dry-run", help="Open Chromium and fill Easy Apply"),
+    submit: bool = typer.Option(False, "--submit", help="Click Submit application after filling"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """Fill LinkedIn Easy Apply in Chromium. Sign in in that window if asked."""
+    from applyflow.apply import job_from_linkedin_url
+    from applyflow.sources import is_linkedin_url
+
+    if not is_linkedin_url(url):
+        _err("That is not a LinkedIn job URL.")
+        raise typer.Exit(1)
+    profile = load_profile()
+    try:
+        resume = parse_resume()
+    except FileNotFoundError as exc:
+        _err(str(exc))
+        raise typer.Exit(1) from exc
+    job = job_from_linkedin_url(url)
+    job.id = upsert_job(job)
+    console.print(job.apply_target())
+    if live and not yes and not Confirm.ask(
+        "Open Chromium, sign in to LinkedIn if needed, and fill Easy Apply?",
+        default=True,
+    ):
+        raise typer.Exit()
+    result, reading = prepare_and_apply(
+        job,
+        resume,
+        profile,
+        live=live,
+        fill=True,
+        submit=submit,
+        tweak=True,
+        hold_for_review=True,
+    )
+    console.print(reading.summary)
+    _print_result(result.status, f"{result.method}: {result.notes}")
+
+
 @app.command()
 def run(
     query: str = typer.Option(..., "--query", "-q", help="What to search for"),

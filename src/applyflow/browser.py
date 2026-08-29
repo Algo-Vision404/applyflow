@@ -4,8 +4,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from applyflow.config import Profile
+from applyflow.config import BROWSER_DIR, Profile, ensure_app_dir
 from applyflow.models import Resume
+from applyflow.sources import is_linkedin_url
 
 
 @dataclass
@@ -166,21 +167,40 @@ def fill_application(
         playwright = sync_playwright().start()
     except Exception as exc:
         return BrowserOutcome("failed", str(exc))
-    browser = None
+    context = None
     try:
-        browser = playwright.chromium.launch(headless=False, args=["--start-maximized"])
-        context = browser.new_context(accept_downloads=True, no_viewport=True)
-        page = context.new_page()
+        ensure_app_dir()
+        context = playwright.chromium.launch_persistent_context(
+            str(BROWSER_DIR),
+            headless=False,
+            accept_downloads=True,
+            no_viewport=True,
+            args=["--start-maximized"],
+        )
+        page = context.pages[0] if context.pages else context.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         page.wait_for_timeout(1500)
         _dismiss_cookies(page)
+        if is_linkedin_url(url):
+            return _linkedin_easy_apply(
+                playwright,
+                context,
+                page,
+                url,
+                values,
+                resume_path,
+                cover_letter or profile.cover_letter_template,
+                resume,
+                submit=submit,
+                hold_for_review=hold_for_review,
+            )
         _prefer_manual_apply(page)
         if not _form_present(page):
             _click_apply_entry(page)
             _wait_for_form(page)
         if _has_captcha(page):
             outcome = BrowserOutcome("opened", "CAPTCHA detected; complete it in the browser")
-            return _finish(playwright, browser, page, outcome, hold_for_review, "CAPTCHA — finish in this window.")
+            return _finish(playwright, context, page, outcome, hold_for_review, "CAPTCHA — finish in this window.")
 
         filled = 0
         uploaded = False
@@ -198,7 +218,7 @@ def fill_application(
             )
             return _finish(
                 playwright,
-                browser,
+                context,
                 page,
                 outcome,
                 hold_for_review,
@@ -214,25 +234,235 @@ def fill_application(
             page.wait_for_timeout(2000)
             if clicked:
                 outcome = BrowserOutcome("submitted", f"filled {filled} fields; resume_uploaded={uploaded}")
-                return _finish(playwright, browser, page, outcome, hold_for_review, "Submit clicked — confirm, then close.")
+                return _finish(playwright, context, page, outcome, hold_for_review, "Submit clicked — confirm, then close.")
             outcome = BrowserOutcome("opened", f"filled {filled} fields; could not find a safe submit button")
-            return _finish(playwright, browser, page, outcome, hold_for_review, "Submit it yourself, then close this window.")
+            return _finish(playwright, context, page, outcome, hold_for_review, "Submit it yourself, then close this window.")
 
         outcome = BrowserOutcome("opened", f"filled {filled} fields; resume_uploaded={uploaded}")
         return _finish(
             playwright,
-            browser,
+            context,
             page,
             outcome,
             hold_for_review,
             "Review the filled form, submit it yourself, then close this window.",
         )
     except PlaywrightTimeout:
-        _stop(playwright, browser)
+        _stop(playwright, context)
         return BrowserOutcome("failed", "timed out loading application page")
     except Exception as exc:
-        _stop(playwright, browser)
+        _stop(playwright, context)
         return BrowserOutcome("failed", str(exc))
+
+
+def _linkedin_easy_apply(
+    playwright,
+    context,
+    page,
+    url: str,
+    values: dict[str, str],
+    resume_path: str,
+    cover: str,
+    resume: Resume,
+    *,
+    submit: bool,
+    hold_for_review: bool,
+) -> BrowserOutcome:
+    _dismiss_cookies(page)
+    if _linkedin_login_wall(page):
+        page.wait_for_timeout(500)
+        if _linkedin_login_wall(page):
+            logged_in = _wait_for_linkedin_login(page, timeout_ms=180_000)
+            if not logged_in:
+                outcome = BrowserOutcome(
+                    "opened",
+                    "LinkedIn sign-in required. Log in in the Chromium window, then run Fill form again.",
+                )
+                return _finish(
+                    playwright,
+                    context,
+                    page,
+                    outcome,
+                    hold_for_review,
+                    "Sign in to LinkedIn in this window, then close it and try Easy Apply again.",
+                )
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                page.wait_for_timeout(1200)
+            except Exception:
+                pass
+
+    if _has_captcha(page):
+        outcome = BrowserOutcome("opened", "CAPTCHA detected; complete it in the browser")
+        return _finish(playwright, context, page, outcome, hold_for_review, "CAPTCHA — finish in this window.")
+
+    if not _click_easy_apply(page):
+        outcome = BrowserOutcome(
+            "opened",
+            "No Easy Apply button. This posting may use the company site instead.",
+        )
+        return _finish(
+            playwright,
+            context,
+            page,
+            outcome,
+            hold_for_review,
+            "No Easy Apply on this job. Apply in this window if a company form opened.",
+        )
+
+    filled = 0
+    uploaded = False
+    for _ in range(8):
+        page.wait_for_timeout(700)
+        if _has_captcha(page):
+            outcome = BrowserOutcome("opened", f"CAPTCHA after filling {filled} fields; finish in the browser")
+            return _finish(playwright, context, page, outcome, hold_for_review, "CAPTCHA — finish in this window.")
+        filled += _fill_fields(page, values)
+        filled += _fill_by_label(page, values)
+        if _upload_resume(page, resume_path):
+            uploaded = True
+        _fill_linkedin_cover(page, cover, resume)
+        if _linkedin_submit_visible(page):
+            if submit:
+                if _click_linkedin_submit(page):
+                    outcome = BrowserOutcome(
+                        "submitted",
+                        f"LinkedIn Easy Apply submitted; filled {filled} fields; resume_uploaded={uploaded}",
+                    )
+                    return _finish(
+                        playwright,
+                        context,
+                        page,
+                        outcome,
+                        hold_for_review,
+                        "Submit clicked. Confirm the result, then close this window.",
+                    )
+            outcome = BrowserOutcome(
+                "opened",
+                f"LinkedIn Easy Apply ready to submit; filled {filled} fields; resume_uploaded={uploaded}. "
+                "Screening questions were left for you.",
+            )
+            return _finish(
+                playwright,
+                context,
+                page,
+                outcome,
+                hold_for_review,
+                "Review screening questions, then submit yourself and close this window.",
+            )
+        if not _click_linkedin_next(page):
+            break
+
+    outcome = BrowserOutcome(
+        "opened",
+        f"LinkedIn Easy Apply filled {filled} fields; resume_uploaded={uploaded}. "
+        "Finish remaining questions in the window.",
+    )
+    return _finish(
+        playwright,
+        context,
+        page,
+        outcome,
+        hold_for_review,
+        "Finish any remaining LinkedIn questions, submit yourself, then close this window.",
+    )
+
+
+def _linkedin_login_wall(page) -> bool:
+    url = (page.url or "").lower()
+    if "/login" in url or "/uas/login" in url or "/checkpoint" in url:
+        return True
+    try:
+        if page.locator("input#username").count() > 0 and page.locator("input#password").count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _wait_for_linkedin_login(page, timeout_ms: int) -> bool:
+    steps = max(int(timeout_ms / 1000), 1)
+    for _ in range(steps):
+        if not _linkedin_login_wall(page):
+            return True
+        page.wait_for_timeout(1000)
+    return not _linkedin_login_wall(page)
+
+
+def _click_easy_apply(page) -> bool:
+    for selector in (
+        "button:has-text('Easy Apply')",
+        "[aria-label*='Easy Apply' i]",
+        "button.jobs-apply-button",
+        ".jobs-apply-button",
+    ):
+        if _click_visible(page, selector):
+            page.wait_for_timeout(1000)
+            return True
+    return False
+
+
+def _linkedin_submit_visible(page) -> bool:
+    for selector in (
+        "button:has-text('Submit application')",
+        "button[aria-label='Submit application']",
+        "button:has-text('Submit Application')",
+    ):
+        try:
+            loc = page.locator(selector).first
+            loc.wait_for(state="visible", timeout=400)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_linkedin_submit(page) -> bool:
+    for selector in (
+        "button:has-text('Submit application')",
+        "button[aria-label='Submit application']",
+        "button:has-text('Submit Application')",
+    ):
+        if _click_visible(page, selector):
+            return True
+    return False
+
+
+def _click_linkedin_next(page) -> bool:
+    for selector in (
+        "button:has-text('Review')",
+        "button[aria-label='Review your application']",
+        "button:has-text('Next')",
+        "button[aria-label='Continue to next step']",
+        "button[aria-label='Continue to next step']",
+        "button:has-text('Continue')",
+    ):
+        if _click_visible(page, selector):
+            page.wait_for_timeout(800)
+            return True
+    return False
+
+
+def _fill_linkedin_cover(page, cover: str, resume: Resume) -> None:
+    snippet = (cover or "")[:1500]
+    if not snippet:
+        return
+    for label in ("Cover letter", "Additional information", "Message to the hiring"):
+        try:
+            loc = page.get_by_label(label, exact=False).first
+        except Exception:
+            continue
+        _fill_one(loc, snippet)
+
+
+def _click_visible(page, selector: str) -> bool:
+    try:
+        loc = page.locator(selector).first
+        loc.wait_for(state="visible", timeout=900)
+        loc.click(timeout=1500)
+        return True
+    except Exception:
+        return False
 
 
 def _finish(playwright, browser, page, outcome: BrowserOutcome, hold: bool, message: str) -> BrowserOutcome:

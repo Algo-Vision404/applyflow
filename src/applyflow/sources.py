@@ -36,12 +36,39 @@ def _id(source: str, *parts: str) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def blocked_host(url: str) -> str:
+def _host(url: str) -> str:
     host = urlparse(url or "").netloc.lower()
     if host.startswith("www."):
         host = host[4:]
+    return host
+
+
+def is_linkedin_url(url: str) -> bool:
+    host = _host(url)
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
+
+
+def blocked_host(url: str) -> str:
+    """Hosts we will not scrape without a login (job search / JD fetch)."""
+    host = _host(url)
     blocked = (
         "linkedin.com",
+        "indeed.com",
+        "glassdoor.com",
+        "ziprecruiter.com",
+        "facebook.com",
+        "instagram.com",
+    )
+    for item in blocked:
+        if host == item or host.endswith("." + item):
+            return item
+    return ""
+
+
+def blocked_for_apply(url: str) -> str:
+    """Hosts we will not drive an application in the browser."""
+    host = _host(url)
+    blocked = (
         "indeed.com",
         "glassdoor.com",
         "ziprecruiter.com",
@@ -57,6 +84,8 @@ def blocked_host(url: str) -> str:
 def detect_ats(url: str) -> str:
     host = urlparse(url or "").netloc.lower()
     path = urlparse(url or "").path.lower()
+    if "linkedin.com" in host:
+        return "linkedin"
     if "greenhouse.io" in host or "greenhouse" in host:
         return "greenhouse"
     if "lever.co" in host:

@@ -12,6 +12,7 @@ APP_DIR = Path(os.environ.get("APPLYFLOW_HOME", Path.home() / ".applyflow"))
 PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_DIR = APP_DIR / "resume"
 DB_PATH = APP_DIR / "applyflow.db"
+BROWSER_DIR = APP_DIR / "browser-profile"
 
 
 class Board(BaseModel):
@@ -76,6 +77,7 @@ class Profile(BaseModel):
 def ensure_app_dir() -> Path:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     RESUME_DIR.mkdir(parents=True, exist_ok=True)
+    BROWSER_DIR.mkdir(parents=True, exist_ok=True)
     return APP_DIR
 
 

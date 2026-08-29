@@ -11,7 +11,7 @@ from applyflow.analyze import read_job
 from applyflow.config import load_profile, update_profile
 from applyflow.hunt import discover_jobs, prepare_and_apply
 from applyflow.resume import parse_resume, save_resume
-from applyflow.store import get_job, init_db, list_applications, list_jobs
+from applyflow.store import get_job, init_db, list_applications, list_jobs, upsert_job
 
 BG = "#F3F5F8"
 INK = "#0F172A"
@@ -283,9 +283,11 @@ class ApplyflowGui(tk.Tk):
         btns.grid(row=1, column=0, columnspan=2, sticky="ew", pady=8)
         self.dry_btn = ttk.Button(btns, text="Prepare application", command=lambda: self._apply_selected(False))
         self.live_btn = ttk.Button(btns, text="Fill form (live)", command=lambda: self._apply_selected(True))
+        self.linkedin_btn = ttk.Button(btns, text="LinkedIn Easy Apply...", command=self._linkedin_easy_apply)
         self.open_btn = ttk.Button(btns, text="Open posting", command=self._open_selected)
         self.dry_btn.pack(side="left", padx=4)
         self.live_btn.pack(side="left", padx=4)
+        self.linkedin_btn.pack(side="left", padx=4)
         self.open_btn.pack(side="left", padx=4)
 
         right = ttk.LabelFrame(body, text="Match & description")
@@ -454,6 +456,36 @@ class ApplyflowGui(tk.Tk):
         self.wait_window(win)
         return result["ok"]
 
+    def _ask_text(self, title: str, message: str) -> str:
+        result = {"value": ""}
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.transient(self)
+        win.configure(bg=BG)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w = min(max(self._px(560), int(sw * 0.4)), int(sw * 0.65))
+        h = min(max(self._px(220), int(sh * 0.22)), int(sh * 0.4))
+        win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        ttk.Label(win, text=message, wraplength=w - 40, font=("Segoe UI", 11)).pack(
+            fill="x", padx=18, pady=(16, 8)
+        )
+        entry = ttk.Entry(win)
+        entry.pack(fill="x", padx=18, pady=8)
+        entry.focus_set()
+
+        def ok() -> None:
+            result["value"] = entry.get().strip()
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=(0, 14))
+        ttk.Button(btns, text="Continue", command=ok).pack(side="left", padx=8)
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=8)
+        win.bind("<Return>", lambda _e: ok())
+        win.grab_set()
+        self.wait_window(win)
+        return result["value"]
+
     def _log(self, message: str) -> None:
         if hasattr(self, "log"):
             self.log.insert("end", message + "\n")
@@ -463,7 +495,7 @@ class ApplyflowGui(tk.Tk):
         self.update_idletasks()
 
     def _action_buttons(self) -> list:
-        return [self.hunt_btn, self.dry_btn, self.live_btn, self.open_btn, self.upload_btn]
+        return [self.hunt_btn, self.dry_btn, self.live_btn, self.linkedin_btn, self.open_btn, self.upload_btn]
 
     def _set_busy(self, busy: bool, label: str = "") -> None:
         self._busy = busy
@@ -693,7 +725,9 @@ class ApplyflowGui(tk.Tk):
         from applyflow.apply import playwright_available
 
         if playwright_available():
-            self.fill_var.set("Fill form: Chromium is ready. Live apply types into public forms; you submit.")
+            self.fill_var.set(
+                "Fill form: Chromium is ready. Live apply fills public forms; LinkedIn Easy Apply uses your LinkedIn login in that window."
+            )
         else:
             self.fill_var.set(
                 "Fill form: Playwright is missing, so Live apply cannot type into fields yet."
@@ -704,26 +738,83 @@ class ApplyflowGui(tk.Tk):
         if job_id is None:
             self._popup("Apply", "Select a job in the list first.")
             return
+        job = get_job(job_id)
+        if job is None:
+            self._popup("Apply", f"No job {job_id}.")
+            return
         self._save_details()
         if live:
             from applyflow.apply import playwright_available
+            from applyflow.sources import is_linkedin_url
 
             if not playwright_available():
                 from applyflow.browser import MISSING_PLAYWRIGHT
 
                 self._popup("Cannot fill form", MISSING_PLAYWRIGHT, error=True)
                 return
-        if live and not self._ask(
-            "Live apply",
-            "A Chromium window will open, Applyflow will type your details and attach your resume, "
-            "then you review and submit. Continue?",
-        ):
-            return
+            if is_linkedin_url(job.apply_target()):
+                prompt = (
+                    "Chromium will open this LinkedIn job. Sign in there if asked. "
+                    "Easy Apply will fill contact details and attach your resume. "
+                    "Screening questions stay for you to answer. Continue?"
+                )
+            else:
+                prompt = (
+                    "A Chromium window will open, Applyflow will type your details and attach your resume, "
+                    "then you review and submit. Continue?"
+                )
+            if not self._ask("Live apply", prompt):
+                return
         if self._busy:
             return
         self._set_busy(True, f"Applying to job #{job_id}...")
         self._log(f"Applying to job #{job_id} ({'live' if live else 'dry-run'})...")
         threading.Thread(target=self._apply_worker, args=(job_id, live), daemon=True).start()
+
+    def _linkedin_easy_apply(self) -> None:
+        from applyflow.apply import job_from_linkedin_url, playwright_available
+        from applyflow.sources import is_linkedin_url
+
+        if self._busy:
+            return
+        url = self._ask_text(
+            "LinkedIn Easy Apply",
+            "Paste a LinkedIn job URL (linkedin.com/jobs/view/...). Sign in inside Chromium if asked.",
+        )
+        if not url:
+            return
+        if not is_linkedin_url(url):
+            self._popup("LinkedIn Easy Apply", "That URL is not a LinkedIn job link.", error=True)
+            return
+        if not playwright_available():
+            from applyflow.browser import MISSING_PLAYWRIGHT
+
+            self._popup("Cannot fill form", MISSING_PLAYWRIGHT, error=True)
+            return
+        self._save_details()
+        try:
+            parse_resume()
+        except FileNotFoundError:
+            self._popup("Resume", "Upload a resume first.")
+            return
+        if not self._ask(
+            "LinkedIn Easy Apply",
+            "Chromium will open LinkedIn, fill Easy Apply with your details and resume, "
+            "and leave screening questions for you. Continue?",
+        ):
+            return
+        try:
+            job = job_from_linkedin_url(url)
+            job.id = upsert_job(job)
+        except Exception as exc:
+            self._popup("LinkedIn Easy Apply", str(exc), error=True)
+            return
+        self.jobs = [job] + [j for j in self.jobs if j.id != job.id]
+        self._fill_table(self.jobs)
+        self.tree.selection_set(str(job.id))
+        self._set_busy(True, f"LinkedIn Easy Apply for job #{job.id}...")
+        self._log(f"LinkedIn Easy Apply: {url}")
+        threading.Thread(target=self._apply_worker, args=(job.id, True), daemon=True).start()
 
     def _apply_worker(self, job_id: int, live: bool) -> None:
         try:

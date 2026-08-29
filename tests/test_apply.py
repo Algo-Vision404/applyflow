@@ -55,3 +55,22 @@ def test_live_without_playwright_does_not_silently_open_tab(monkeypatch):
 def test_apply_result_status():
     result = ApplyResult(_job(), "opened", "browser", "filled 3 fields")
     assert result.ok
+
+
+def test_linkedin_apply_allowed_but_not_scraped():
+    from applyflow.apply import job_from_linkedin_url
+    from applyflow.sources import blocked_for_apply, blocked_host, detect_ats, is_linkedin_url
+
+    url = "https://www.linkedin.com/jobs/view/123"
+    assert is_linkedin_url(url)
+    assert blocked_host(url) == "linkedin.com"
+    assert blocked_for_apply(url) == ""
+    assert blocked_for_apply("https://www.indeed.com/viewjob?jk=1") == "indeed.com"
+    assert detect_ats(url) == "linkedin"
+    job = job_from_linkedin_url(url)
+    assert job.ats == "linkedin"
+    try:
+        job_from_linkedin_url("https://example.com/job")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
