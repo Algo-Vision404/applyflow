@@ -1,0 +1,63 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env/
+.python-version
+
+# Tests / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# Secrets and local credentials — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.json
+secrets.json
+service-account*.json
+*.sqlite
+*.sqlite3
+*.db
+
+# Applyflow user data (profile, resume, applications) lives in ~/.applyflow
+.applyflow/
+profile.json
+resume.pdf
+resume.docx
+resume.txt
+resume.md
+resume_copy.*
+*.pdf
+*.docx
+
+# Logs and local dumps
+*.log
+*.dump
+*.bak

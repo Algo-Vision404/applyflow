@@ -1,0 +1,5 @@
+#!/bin/sh
+# Block commits that contain secrets or personal data.
+root="$(git rev-parse --show-toplevel)"
+python "$root/scripts/check_secrets.py"
+exit $?

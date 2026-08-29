@@ -1,0 +1,6 @@
+#!/bin/sh
+# Block pushes that contain secrets or personal data.
+# This hook never pushes by itself; it only refuses an unsafe push.
+root="$(git rev-parse --show-toplevel)"
+python "$root/scripts/check_secrets.py"
+exit $?
